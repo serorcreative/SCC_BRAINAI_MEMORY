@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scc-brainai-memory"
+version = "1.0.0"
+description = "Mémoire officielle de BrainAI — expérience du Kernel (demandes, plans, décisions, apprentissages…). Distincte de SCC_MEMORY. Append-only, auditable, confidentialité garantie. Stdlib pur, déterministe, sans réseau."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+authors = [{ name = "Seror Créative" }]
+keywords = ["scc", "brainai", "memory", "audit", "privacy"]
+dependencies = []
+
+[project.scripts]
+scc-brain-memory = "scc_brainai_memory.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
