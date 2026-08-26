@@ -176,6 +176,45 @@ def test_intra_process_lock_shared_by_canonical_path(config):
         pass
 
 
+def test_canonical_key_stable_across_symlink_and_parent_creation(tmp_path):
+    """Invariant §5 niveau-1 : la clé canonique (donc le RLock partagé) est STABLE quelle que
+    soit l'existence préalable du parent et à travers un symlink/alias. Régression du défaut où
+    ``_canonical`` gardait le chemin BRUT quand le parent n'existait pas encore.
+
+    Sans le correctif : ``a`` (via symlink, parent absent) et ``b`` (via chemin réel) obtenaient
+    des clés distinctes -> RLock distincts -> la réentrance ``with a: with b:`` ouvrait un 2e fd
+    et un ``flock`` sur le MÊME inode détenu par ``a`` -> self-deadlock -> LockTimeout.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    lp_link = link / "sub" / "brain_memory.lock"
+    lp_real = real / "sub" / "brain_memory.lock"
+
+    # 1. Construire AVANT existence du parent.
+    a = StoreLock(lp_link, timeout=2.0)
+    b = StoreLock(lp_real, timeout=2.0)
+
+    assert a.canonical == b.canonical
+    assert a._entry is b._entry
+
+    # 2. Créer explicitement le parent, sans passer par StoreLock.
+    (real / "sub").mkdir(parents=True)
+
+    # 3. Construire APRÈS création et vérifier la stabilité.
+    c = StoreLock(lp_real, timeout=2.0)
+
+    assert c.canonical == a.canonical
+    assert c._entry is a._entry
+
+    # 4. Seulement maintenant tester la réentrance.
+    with a:
+        with b:
+            pass
+
+
 # 2. LOCK FAIL-CLOSED (inter-process réel via subprocess)
 def test_lock_timeout_via_real_subprocess_no_mutation(config, tmp_path):
     ready = tmp_path / "ready"; release = tmp_path / "release"

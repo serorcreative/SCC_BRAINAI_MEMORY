@@ -71,10 +71,15 @@ def _entry_for(canonical: str) -> _Entry:
 
 
 def _canonical(lock_path: Path) -> str:
-    # Chemin canonique stable indépendant de l'existence préalable du fichier.
-    parent = lock_path.parent
-    base = parent.resolve() if parent.exists() else parent
-    return str(base / lock_path.name)
+    # Clé de partage STABLE et indépendante de l'existence préalable du fichier.
+    # On résout le parent INCONDITIONNELLEMENT en mode non-strict : ``resolve(strict=False)``
+    # ne lève jamais et normalise symlinks / ``..`` / alias sur le préfixe existant même si
+    # le chemin final n'existe pas encore. Sans cela, deux StoreLock du même lockfile —
+    # construits avant vs après création du data_dir, ou via un symlink (p.ex. macOS
+    # /var→/private/var) — obtenaient des clés différentes et donc des RLock DISTINCTS,
+    # brisant silencieusement l'invariant §5 niveau-1 (RLock partagé par chemin canonique).
+    parent = lock_path.parent.resolve(strict=False)
+    return str(parent / lock_path.name)
 
 
 class StoreLock:
