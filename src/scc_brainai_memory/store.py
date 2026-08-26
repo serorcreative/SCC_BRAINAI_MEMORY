@@ -57,6 +57,24 @@ from scc_brainai_memory.report import memory_report, render_markdown
 from scc_brainai_memory.retention import RetentionPolicy
 
 
+def _json_error_is_eof_compatible(exc: json.JSONDecodeError, s: str) -> bool:
+    """Prédicat CONSERVATEUR (L2 §8) : l'erreur JSON est-elle compatible avec une écriture
+    interrompue à EOF — donc une *dernière ligne réellement tronquée* — plutôt qu'une corruption
+    syntaxique clairement située AVANT la fin de la chaîne ?
+
+    On n'autorise la récupération bornée (``truncated_tail``) que dans deux cas non ambigus :
+      1. le parseur a consommé toute l'entrée puis a manqué de données (``exc.pos >= len(s)``) :
+         « Expecting value / ',' / ':' / property name » à l'extrémité ;
+      2. « Unterminated string » : une chaîne ouverte jamais refermée => le scan atteint EOF.
+    Toute autre erreur (position AVANT la fin, avec du contenu résiduel) => NON-EOF => corruption.
+    Règle volontairement conservatrice : en cas de doute, fail-closed (mieux vaut refuser une vraie
+    tail que d'accepter en silence une corruption). Aucune heuristique fondée sur la seule absence de \\n.
+    """
+    if exc.pos >= len(s):
+        return True
+    return exc.msg.startswith("Unterminated string")
+
+
 class BrainMemoryStore:
     def __init__(self, config: Optional[MemoryConfig] = None, *,
                  clock: Optional[Clock] = None, redactor: Optional[Redactor] = None,
@@ -388,13 +406,22 @@ class BrainMemoryStore:
                     raise MemoryCorruption(f"ligne vide (L{i+1}) dans brain_memory.jsonl")
                 try:
                     obj = json.loads(s)
-                except json.JSONDecodeError:
-                    if i == n - 1 and not ends_nl:
-                        self.truncated_tail = True   # tail tronquée (pas de \n final) : récupération bornée
+                except json.JSONDecodeError as exc:
+                    # Récupération bornée UNIQUEMENT pour une tail RÉELLEMENT tronquée à EOF :
+                    # dernière ligne, sans \n final, ET erreur compatible EOF. Une erreur syntaxique
+                    # clairement située AVANT EOF => corruption fail-closed, même en dernière ligne
+                    # et même sans newline finale (l'absence de \n ne prouve pas la troncature).
+                    if i == n - 1 and not ends_nl and _json_error_is_eof_compatible(exc, s):
+                        self.truncated_tail = True
                         break
+                    if i == n - 1 and not ends_nl:
+                        detail = "[dernière ligne sans \\n mais erreur non-EOF => corruption]"
+                    elif i == n - 1:
+                        detail = "[dernière ligne complète => corruption]"
+                    else:
+                        detail = "[au milieu]"
                     raise MemoryCorruption(
-                        f"JSON invalide (L{i+1}) dans brain_memory.jsonl "
-                        + ("[dernière ligne complète => corruption]" if (i == n - 1 and ends_nl) else "[au milieu]"))
+                        f"JSON invalide (L{i+1}) dans brain_memory.jsonl {detail}") from exc
                 e = MemoryEntry.from_dict(obj)
                 if e.prev_hash != prev_hash or not e.verify():
                     raise MemoryCorruption(f"rupture de chaîne d'empreinte (L{i+1})")  # FAIL même en dernière ligne
@@ -417,8 +444,16 @@ class BrainMemoryStore:
                     obj = json.loads(s)
                 except json.JSONDecodeError as exc:
                     raise MemoryCorruption(f"brain_sessions.jsonl invalide : {exc}") from exc
-                ms = MemorySession.from_dict(obj)
-                snap[ms.id] = ms
+                # Validation structurelle du snapshot (lifecycle AUTORITAIRE) : aucune normalisation
+                # ni écrasement silencieux d'un record corrompu. Toute violation => fail-closed.
+                if not isinstance(obj, dict):
+                    raise MemoryCorruption("brain_sessions.jsonl : record non-objet (fail-closed)")
+                raw_id = obj.get("id")
+                if not isinstance(raw_id, str) or not raw_id.strip():
+                    raise MemoryCorruption("brain_sessions.jsonl : session.id absent ou vide (fail-closed)")
+                if raw_id in snap:
+                    raise MemoryCorruption(f"brain_sessions.jsonl : session.id dupliqué '{raw_id}' (fail-closed)")
+                snap[raw_id] = MemorySession.from_dict(obj)
 
         membership = self._membership_from(self._entries)
         recon = False

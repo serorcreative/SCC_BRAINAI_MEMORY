@@ -296,9 +296,61 @@ def test_truncated_last_line_without_newline_bounded_recovery(config):
     assert store.audit()["integrity"]["ok"] is True
 
 
+def test_corruption_last_line_invalid_non_eof_without_newline(config):
+    """A — Une dernière ligne SANS newline mais dont l'erreur JSON est CLAIREMENT située avant EOF
+    (virgule manquante, contenu résiduel après le point d'échec) n'est PAS une tail tronquée :
+    elle doit produire MemoryCorruption. L'absence de \\n ne prouve pas la troncature."""
+    lines = _seed(config, 2)
+    _write_journal(config, "\n".join(lines) + "\n" + '{"a": 1 "b": 2}')   # pos d'erreur < len, non-EOF
+    with pytest.raises(MemoryCorruption):
+        BrainMemoryStore(config=config)
+
+
 def test_invalid_sessions_snapshot_fail_closed(config):
     _seed(config, 2)
     config.sessions_path.write_text("{ not json\n", encoding="utf-8")
+    with pytest.raises(MemoryCorruption):
+        BrainMemoryStore(config=config)
+
+
+def _first_session_record(config):
+    """Retourne le premier record JSON (dict) de brain_sessions.jsonl après un seed cohérent."""
+    return json.loads(config.sessions_path.read_text(encoding="utf-8").splitlines()[0])
+
+
+def test_sessions_snapshot_non_object_record_fail_closed(config):
+    """B — Un record de snapshot qui n'est pas un objet JSON => fail-closed (aucune tolérance)."""
+    _seed(config, 1)
+    config.sessions_path.write_text("[1, 2, 3]\n", encoding="utf-8")
+    with pytest.raises(MemoryCorruption):
+        BrainMemoryStore(config=config)
+
+
+def test_sessions_snapshot_missing_id_fail_closed(config):
+    """B — session.id absent => fail-closed (jamais `id -> ""` puis `snap[""] = ...`)."""
+    _seed(config, 1)
+    rec = _first_session_record(config)
+    rec.pop("id", None)
+    config.sessions_path.write_text(json.dumps(rec, ensure_ascii=False) + "\n", encoding="utf-8")
+    with pytest.raises(MemoryCorruption):
+        BrainMemoryStore(config=config)
+
+
+def test_sessions_snapshot_empty_id_fail_closed(config):
+    """B — session.id vide => fail-closed."""
+    _seed(config, 1)
+    rec = _first_session_record(config)
+    rec["id"] = ""
+    config.sessions_path.write_text(json.dumps(rec, ensure_ascii=False) + "\n", encoding="utf-8")
+    with pytest.raises(MemoryCorruption):
+        BrainMemoryStore(config=config)
+
+
+def test_sessions_snapshot_duplicate_id_fail_closed(config):
+    """B — deux records avec le même session.id => fail-closed (jamais « la dernière ligne gagne »)."""
+    _seed(config, 1)
+    rec = config.sessions_path.read_text(encoding="utf-8").splitlines()[0]
+    config.sessions_path.write_text(rec + "\n" + rec + "\n", encoding="utf-8")
     with pytest.raises(MemoryCorruption):
         BrainMemoryStore(config=config)
 
