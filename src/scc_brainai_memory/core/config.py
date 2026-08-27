@@ -44,6 +44,11 @@ class MemoryConfig:
     def sessions_path(self) -> Path:
         return self.data_dir / "brain_sessions.jsonl"
 
+    @property
+    def lock_path(self) -> Path:
+        # Fichier de lock DÉDIÉ (L2 §5) : jamais la cible réécrite par os.replace.
+        return self.data_dir / "brain_memory.lock"
+
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
